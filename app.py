@@ -13,6 +13,9 @@ from modelos import (
     contracorrente,
     escoamento_cruzado,
     mistura_perfeita,
+    perfil_esquematico,
+    transporte_gas,
+    transporte_liquido,
     x_min_concentrado,
     y_equilibrio,
     y_max_ideal,
@@ -28,7 +31,7 @@ CORES = {"MP": COR_MP, "CR": COR_CR, "CC": COR_CC}
 # Barra lateral: parâmetros comuns a todos os modelos
 # ---------------------------------------------------------------------------
 st.sidebar.header("Parâmetros")
-st.sidebar.caption("Sistema binário A/B. A é o componente mais permeável.")
+st.sidebar.caption("Valem para as abas 1 a 5 (separação de gases, sistema binário A/B; A é o componente mais permeável). A aba 6 tem controles próprios.")
 
 xf = st.sidebar.slider("Fração molar de A na alimentação, x_f", 0.02, 0.95, 0.20, 0.01)
 alfa = st.sidebar.slider("Seletividade ideal, α* = P'A/P'B", 1.5, 100.0, 20.0, 0.5)
@@ -45,10 +48,10 @@ pL = razao * pH
 p = Params(xf=xf, alfa=alfa, pH=pH, pL=pL, PA=PA, t=t_um, qf=qf)
 st.sidebar.markdown(f"p_L = **{pL:.2f} bar**")
 
-st.title("Separação de gases por membranas")
+st.title("Separação por membranas")
 st.caption(
-    "Modelos de módulo: mistura perfeita, escoamento cruzado e contracorrente "
-    "(FT III - PQI 3303). Mova os controles da barra lateral e observe os gráficos."
+    "Modelos de módulo para separação de gases (abas 1 a 5) e transporte local em diálise e "
+    "permeação gasosa (aba 6). FT III - PQI 3303."
 )
 
 
@@ -117,9 +120,42 @@ def metricas(res, com_area=True):
         c4.metric("Área de membrana, A_m", f"{res['Am']:.3g} m²")
 
 
-tab_eq, tab_mp, tab_cr, tab_cc, tab_cmp, tab_teo = st.tabs(
+# ---------------------------------------------------------------------------
+# Auxiliares da aba "Transporte local"
+# ---------------------------------------------------------------------------
+PRESET_HEMO = {"dl_C1": 20.0, "dl_C2": 0.0, "dl_K": 1.0, "dl_lkc1": -5.0, "dl_lkc2": -5.0,
+               "dl_lD": -9.3, "dl_lL": 1.4}  # L = 10^1,4 ≈ 25 µm (celofane, como na apostila)
+PRESET_GAS = {"gs_p1": 5.0, "gs_p2": 1.0, "gs_T": 300.0, "gs_lkc1": -1.3, "gs_lkc2": -1.3,
+              "gs_lD": -9.0, "gs_lS": 0.3, "gs_lL": 0.0}
+
+
+def preset_hemo():
+    st.session_state.update(PRESET_HEMO)
+
+
+def preset_gas():
+    st.session_state.update(PRESET_GAS)
+
+
+def slider_estado(rotulo, chave, lo, hi, padrao, passo):
+    """Slider linear cujo valor inicial vem do session_state (permite restaurar exemplos)."""
+    if chave not in st.session_state:
+        st.session_state[chave] = padrao
+    return st.slider(rotulo, lo, hi, step=passo, key=chave)
+
+
+def slider_log(rotulo, chave, lo, hi, padrao):
+    """Slider em log10: mostra o valor real abaixo do controle."""
+    if chave not in st.session_state:
+        st.session_state[chave] = padrao
+    v = st.slider(f"log₁₀ de {rotulo}", lo, hi, step=0.1, key=chave)
+    st.caption(f"= {10 ** v:.3g}")
+    return 10 ** v
+
+
+tab_eq, tab_mp, tab_cr, tab_cc, tab_cmp, tab_loc, tab_teo = st.tabs(
     ["1. Equilíbrio local", "2. Mistura perfeita", "3. Escoamento cruzado",
-     "4. Contracorrente", "5. Comparação", "Teoria"]
+     "4. Contracorrente", "5. Comparação", "6. Transporte local (diálise e gás)", "Teoria"]
 )
 
 # ---------------------------------------------------------------------------
@@ -343,11 +379,156 @@ with tab_cmp:
     )
 
 # ---------------------------------------------------------------------------
+# 6. Transporte local (diálise e permeação gasosa)
+# ---------------------------------------------------------------------------
+with tab_loc:
+    st.subheader("Transporte através da membrana: resistências em série")
+    st.markdown(
+        "Nesta aba, o foco é **um ponto da membrana**: o soluto atravessa o **filme 1**, a **membrana** "
+        "e o **filme 2**, e as três resistências se somam. O mesmo raciocínio vale para **diálise** "
+        "(líquido) e para **permeação gasosa**. Os controles desta aba são independentes "
+        "da barra lateral."
+    )
+    sistema = st.radio("Sistema", ["Diálise (permeação líquida)", "Permeação gasosa"],
+                       horizontal=True, key="loc_sistema")
+
+    ctrl, graf = st.columns([1, 2])
+
+    if sistema.startswith("Diálise"):
+        with ctrl:
+            st.button("Restaurar exemplo (hemodiálise, valores ilustrativos)", on_click=preset_hemo)
+            C1 = slider_estado("C₁: concentração do soluto no líquido 1 (mol/m³)", "dl_C1", 0.0, 100.0, 20.0, 1.0)
+            C2 = slider_estado("C₂: concentração do soluto no líquido 2 (mol/m³)", "dl_C2", 0.0, 100.0, 0.0, 1.0)
+            Kp = slider_estado("K': coeficiente de distribuição", "dl_K", 0.1, 5.0, 1.0, 0.1)
+            kc1 = slider_log("k_c1: filme do líquido 1 (m/s)", "dl_lkc1", -7.0, -2.0, -5.0)
+            kc2 = slider_log("k_c2: filme do líquido 2 (m/s)", "dl_lkc2", -7.0, -2.0, -5.0)
+            D = slider_log("D_AB: difusividade na membrana (m²/s)", "dl_lD", -12.0, -8.0, -9.3)
+            L = slider_log("L: espessura da membrana (µm)", "dl_lL", -1.0, 3.0, 1.4)
+        if C1 <= C2:
+            st.warning("Para haver transporte de 1 para 2, é preciso C₁ > C₂.")
+        else:
+            r = transporte_liquido(C1, C2, kc1, kc2, D, Kp, L)
+            unid_R = "s/m"
+            rotulos_R = ["Filme 1 (1/k_c1)", "Membrana (1/P_M)", "Filme 2 (1/k_c2)"]
+            eixo_y = "Concentração de A (mol/m³)"
+            Ls = np.logspace(-1, 3, 120)
+            rl = transporte_liquido(C1, C2, kc1, kc2, D, Kp, Ls)
+            N_atual = r["N"]
+            un_N = "mol/(m²·s)"
+            N_curva = rl["N"]
+            N_mem = (C1 - C2) / rl["Rm"]
+            N_max = (C1 - C2) / (r["R1"] + r["R2"])
+            with graf:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Fluxo, N_A", f"{N_atual:.3g} mol/(m²·s)")
+                m2.metric("Permeabilidade, P_M = D·K'/L", f"{r['PM']:.3g} m/s")
+                fr = r["Rm"] / (r["R1"] + r["Rm"] + r["R2"])
+                m3.metric("Resistência da membrana", f"{100 * fr:.0f} % do total")
+            ok = True
+    else:
+        with ctrl:
+            st.button("Restaurar exemplo (película fina de polímero, valores ilustrativos)", on_click=preset_gas)
+            p1 = slider_estado("p_A1: pressão parcial de A no lado 1 (atm)", "gs_p1", 0.1, 50.0, 5.0, 0.1)
+            p2 = slider_estado("p_A2: pressão parcial de A no lado 2 (atm)", "gs_p2", 0.0, 50.0, 1.0, 0.1)
+            T = slider_estado("Temperatura (K)", "gs_T", 273.0, 400.0, 300.0, 1.0)
+            kc1 = slider_log("k_c1: filme gasoso 1 (m/s)", "gs_lkc1", -4.0, 0.0, -1.3)
+            kc2 = slider_log("k_c2: filme gasoso 2 (m/s)", "gs_lkc2", -4.0, 0.0, -1.3)
+            D = slider_log("D_AB: difusividade na membrana (m²/s)", "gs_lD", -13.0, -8.0, -9.0)
+            S = slider_log("S: solubilidade, m³(CNTP)/(atm·m³ sólido)", "gs_lS", -1.0, 2.0, 0.3)
+            L = slider_log("L: espessura da membrana (µm)", "gs_lL", -1.0, 3.0, 0.0)
+        if p1 <= p2:
+            st.warning("Para haver transporte de 1 para 2, é preciso p_A1 > p_A2.")
+        else:
+            r = transporte_gas(p1, p2, T, kc1, kc2, D, S, L)
+            unid_R = "m²·s·atm/kmol"
+            rotulos_R = ["Filme 1 (RT/k_c1)", "Membrana (L/P_M)", "Filme 2 (RT/k_c2)"]
+            eixo_y = "Pressão parcial de A (atm)"
+            Ls = np.logspace(-1, 3, 120)
+            rl = transporte_gas(p1, p2, T, kc1, kc2, D, S, Ls)
+            N_atual = r["N"]
+            un_N = "kmol/(m²·s)"
+            N_curva = rl["N"]
+            N_mem = (p1 - p2) / rl["Rm"]
+            N_max = (p1 - p2) / (r["R1"] + r["R2"])
+            with graf:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Fluxo, N_A", f"{N_atual:.3g} kmol/(m²·s)")
+                m2.metric("Equivalente", f"{N_atual * 22414:.3g} L(CNTP)/(m²·s)")
+                fr = r["Rm"] / (r["R1"] + r["Rm"] + r["R2"])
+                m3.metric("Resistência da membrana", f"{100 * fr:.0f} % do total")
+            ok = True
+
+    if (sistema.startswith("Diálise") and C1 > C2) or (not sistema.startswith("Diálise") and p1 > p2):
+        with graf:
+            # 1) Perfil de concentração / pressão parcial
+            xs_p, ys_p = perfil_esquematico(r["perfil"])
+            fig = go.Figure()
+            fig.add_vrect(x0=0, x1=0.3, fillcolor="#cfe8ff", opacity=0.35, line_width=0,
+                          annotation_text="Filme 1", annotation_position="top left")
+            fig.add_vrect(x0=0.3, x1=0.7, fillcolor="#d9d9d9", opacity=0.55, line_width=0,
+                          annotation_text="Membrana", annotation_position="top left")
+            fig.add_vrect(x0=0.7, x1=1.0, fillcolor="#cfe8ff", opacity=0.35, line_width=0,
+                          annotation_text="Filme 2", annotation_position="top left")
+            fig.add_trace(go.Scatter(x=xs_p, y=ys_p, mode="lines+markers",
+                                     line=dict(color="crimson", width=3), name="Perfil"))
+            fig.update_layout(title="Perfil de concentração (esquemático)", height=400,
+                              xaxis_title="Posição (larguras fora de escala)", yaxis_title=eixo_y,
+                              xaxis=dict(range=[0, 1], showticklabels=False), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            if sistema.startswith("Diálise"):
+                st.caption("Os saltos nas interfaces com a membrana vêm do coeficiente de distribuição "
+                           "K' (C_s = K'·C_líquido). Com K' = 1, o perfil é contínuo.")
+            else:
+                st.caption("Dentro da membrana, o gráfico mostra a pressão parcial em equilíbrio com a "
+                           "concentração no sólido (C_s = H·p_A), por isso o perfil é contínuo nas interfaces.")
+
+            # 2) Resistências em série
+            Rs = [r["R1"], r["Rm"], r["R2"]]
+            Rt = sum(Rs)
+            fig = go.Figure()
+            for rot, val, cor in zip(rotulos_R, Rs, ["#6baed6", "#7f7f7f", "#9ecae1"]):
+                fig.add_trace(go.Bar(y=[""], x=[100 * val / Rt], name=rot, orientation="h",
+                                     marker_color=cor,
+                                     text=[f"{100 * val / Rt:.0f} %"], textposition="inside",
+                                     hovertemplate=f"{rot}: {val:.3g} {unid_R}<extra></extra>"))
+            fig.update_layout(barmode="stack", title="Fração de cada resistência (em série)",
+                              height=220, xaxis=dict(title="% da resistência total", range=[0, 100]),
+                              legend=dict(orientation="h", y=-0.5))
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"Resistência total = {Rt:.3g} {unid_R}. Quando a membrana domina, o processo é "
+                       "controlado pela membrana e os filmes podem ser desprezados, como nos modelos de módulo.")
+
+            # 3) Efeito da espessura
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=Ls, y=N_curva, name="Fluxo real (filmes + membrana)",
+                                     line=dict(color="crimson", width=3)))
+            fig.add_trace(go.Scatter(x=Ls, y=N_mem, name="Só a membrana (filmes desprezados)",
+                                     line=dict(color="gray", dash="dash")))
+            fig.add_hline(y=N_max, line_dash="dot", line_color="#6baed6",
+                          annotation_text="Limite imposto pelos filmes (L → 0)",
+                          annotation_position="bottom right")
+            fig.add_trace(go.Scatter(x=[L], y=[N_atual], mode="markers",
+                                     marker=dict(size=13, color="black"), name="Condição atual"))
+            fig.update_layout(title="Efeito da espessura da membrana", height=430,
+                              xaxis=dict(title="Espessura L (µm)", type="log"),
+                              yaxis=dict(title=f"Fluxo N_A ({un_N})", type="log"),
+                              legend=dict(orientation="h", y=-0.25))
+            st.plotly_chart(fig, use_container_width=True)
+            st.info(
+                "Para membranas espessas, o fluxo cai como 1/L (a curva real acompanha a tracejada). "
+                "Ao afinar a membrana, o fluxo **não cresce indefinidamente**: ele satura no valor "
+                "imposto pelos filmes. É por isso que, em membranas muito finas, agitar o fluido "
+                "(aumentar k_c) passa a ser mais eficaz do que reduzir L."
+            )
+
+# ---------------------------------------------------------------------------
 # Teoria
 # ---------------------------------------------------------------------------
 with tab_teo:
     st.subheader("Resumo teórico")
-    st.markdown("**Transporte local (resistências em série).** Para gases, o fluxo de A é")
+    st.markdown("**Transporte local (resistências em série).** Para diálise (líquido), com P_M = D_AB·K'/L:")
+    st.latex(r"N_A=\frac{C_1-C_2}{\dfrac{1}{k_{c1}}+\dfrac{1}{P_M}+\dfrac{1}{k_{c2}}}")
+    st.markdown("Para gases, o fluxo de A é")
     st.latex(r"N_A=\frac{p_{A1}-p_{A2}}{\dfrac{RT}{k_{c1}}+\dfrac{L}{P_M}+\dfrac{RT}{k_{c2}}}"
              r"\qquad P_M=D_{AB}H")
     st.markdown("Nos modelos de módulo, a resistência dos filmes gasosos é desprezada (a membrana controla) e o fluxo do componente A é")

@@ -255,3 +255,65 @@ def contracorrente(p: Params, theta: float, n_pontos=200):
     yp = y[-1]  # permeado sai no lado da alimentação (contracorrente)
     return dict(A_pos=A_pos[order], x=x[order], y=y[order],
                 xo=raiz, yp=yp, Am=_cm2_to_m2(r["A_end"]), rec=theta * yp / xf)
+
+
+# ---------------------------------------------------------------------------
+# Transporte local através da membrana (resistências em série)
+#   Líquido (diálise): Eqs. 3-9 da apostila
+#   Gás:               Eqs. 10-16 da apostila
+# As funções aceitam escalares ou arrays NumPy (por exemplo, para variar a espessura L).
+# ---------------------------------------------------------------------------
+R_GAS = 0.08206  # m3.atm/(kmol.K)
+
+
+def transporte_liquido(C1, C2, kc1, kc2, D, Kp, L_um):
+    """Permeação líquida (diálise).
+
+    C1, C2 : concentrações nos seios dos líquidos 1 e 2 (mol/m3)
+    kc1, kc2 : coeficientes de transferência de massa dos filmes (m/s)
+    D : difusividade do soluto na membrana (m2/s)
+    Kp : coeficiente de distribuição de equilíbrio K' (adimensional)
+    L_um : espessura da membrana (µm)
+    """
+    PM = D * Kp / (L_um * 1e-6)  # m/s  (Eq. 4)
+    R1, Rm, R2 = 1.0 / kc1, 1.0 / PM, 1.0 / kc2  # s/m
+    N = (C1 - C2) / (R1 + Rm + R2)  # mol/(m2.s)  (Eq. 9)
+    C1i = C1 - N * R1
+    C2i = C2 + N * R2
+    return dict(N=N, PM=PM, R1=R1, Rm=Rm, R2=R2, C1i=C1i, C2i=C2i,
+                perfil=(C1, C1i, Kp * C1i, Kp * C2i, C2i, C2))
+
+
+def transporte_gas(p1, p2, T, kc1, kc2, D, S, L_um):
+    """Permeação gasosa.
+
+    p1, p2 : pressões parciais de A nos seios das fases 1 e 2 (atm)
+    T : temperatura (K)
+    kc1, kc2 : coeficientes de transferência de massa nas fases gasosas (m/s)
+    D : difusividade de A na membrana (m2/s)
+    S : solubilidade em m3(CNTP)/[atm.m3 de sólido]  ->  H = S/22,414 (Eqs. 10 e 12)
+    L_um : espessura da membrana (µm)
+
+    N em kmol/(m2.s). Resistências em m2.s.atm/kmol.
+    """
+    H = S / 22.414  # kmol/(m3.atm)
+    PM = D * H  # kmol/(s.m.atm)  (Eq. 12)
+    R1 = R_GAS * T / kc1
+    Rm = (L_um * 1e-6) / PM
+    R2 = R_GAS * T / kc2
+    N = (p1 - p2) / (R1 + Rm + R2)  # Eq. 16
+    p1i = p1 - N * R1
+    p2i = p2 + N * R2
+    return dict(N=N, PM=PM, H=H, R1=R1, Rm=Rm, R2=R2, p1i=p1i, p2i=p2i,
+                perfil=(p1, p1i, p1i, p2i, p2i, p2))
+
+
+def perfil_esquematico(valores, larguras=(0.3, 0.4, 0.3)):
+    """Monta o perfil (x, y) em três regiões: filme 1 | membrana | filme 2.
+
+    valores = (bulk1, interface1_fluido, interface1_membrana, interface2_membrana,
+               interface2_fluido, bulk2). A escala horizontal é esquemática.
+    """
+    x1 = larguras[0]
+    x2 = larguras[0] + larguras[1]
+    return [0.0, x1, x1, x2, x2, 1.0], list(valores)
