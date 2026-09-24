@@ -137,6 +137,16 @@ def preset_gas():
     st.session_state.update(PRESET_GAS)
 
 
+def fmt_prefixo(v, base, resto=""):
+    """Escolhe o prefixo SI (m, µ, n, p) para deixar o número legível.
+    Ex.: fmt_prefixo(1.87e-5, "mol", "/(m²·s)") -> ("18.7", "µmol/(m²·s)")."""
+    escalas = [(1.0, ""), (1e-3, "m"), (1e-6, "µ"), (1e-9, "n"), (1e-12, "p")]
+    for esc, pref in escalas:
+        if abs(v) >= esc:
+            break
+    return f"{v / esc:.3g}", f"{pref}{base}{resto}"
+
+
 def slider_estado(rotulo, chave, lo, hi, padrao, passo):
     """Slider linear cujo valor inicial vem do session_state (permite restaurar exemplos)."""
     if chave not in st.session_state:
@@ -420,10 +430,12 @@ with tab_loc:
             N_max = (C1 - C2) / (r["R1"] + r["R2"])
             with graf:
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Fluxo, N_A", f"{N_atual:.3g} mol/(m²·s)")
-                m2.metric("Permeabilidade, P_M = D·K'/L", f"{r['PM']:.3g} m/s")
+                vN, uN = fmt_prefixo(N_atual, "mol", "/(m²·s)")
+                vP, uP = fmt_prefixo(r["PM"], "m", "/s")
+                m1.metric(f"Fluxo N_A ({uN})", vN)
+                m2.metric(f"P_M ({uP})", vP)
                 fr = r["Rm"] / (r["R1"] + r["Rm"] + r["R2"])
-                m3.metric("Resistência da membrana", f"{100 * fr:.0f} % do total")
+                m3.metric("Resist. da membrana", f"{100 * fr:.0f} %")
             ok = True
     else:
         with ctrl:
@@ -452,16 +464,28 @@ with tab_loc:
             N_max = (p1 - p2) / (r["R1"] + r["R2"])
             with graf:
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Fluxo, N_A", f"{N_atual:.3g} kmol/(m²·s)")
-                m2.metric("Equivalente", f"{N_atual * 22414:.3g} L(CNTP)/(m²·s)")
+                vN, uN = fmt_prefixo(N_atual * 1000, "mol", "/(m²·s)")
+                m1.metric(f"Fluxo N_A ({uN})", vN)
+                m2.metric("Fluxo (L CNTP/m²·s)", f"{N_atual * 22414:.3g}")
                 fr = r["Rm"] / (r["R1"] + r["Rm"] + r["R2"])
-                m3.metric("Resistência da membrana", f"{100 * fr:.0f} % do total")
+                m3.metric("Resist. da membrana", f"{100 * fr:.0f} %")
             ok = True
 
     if (sistema.startswith("Diálise") and C1 > C2) or (not sistema.startswith("Diálise") and p1 > p2):
         with graf:
             # 1) Perfil de concentração / pressão parcial
-            xs_p, ys_p = perfil_esquematico(r["perfil"])
+            equivalente = True
+            if sistema.startswith("Diálise"):
+                modo = st.radio("Concentração dentro da membrana",
+                                ["Equivalente no líquido, C_s/K' (perfil contínuo)",
+                                 "Real no sólido, C_s = K'·C (com saltos)"],
+                                horizontal=True, key="dl_modo")
+                equivalente = modo.startswith("Equivalente")
+            vals = list(r["perfil"])
+            if sistema.startswith("Diálise") and equivalente:
+                vals[2] = vals[2] / Kp
+                vals[3] = vals[3] / Kp
+            xs_p, ys_p = perfil_esquematico(vals)
             fig = go.Figure()
             fig.add_vrect(x0=0, x1=0.3, fillcolor="#cfe8ff", opacity=0.35, line_width=0,
                           annotation_text="Filme 1", annotation_position="top left")
@@ -469,15 +493,26 @@ with tab_loc:
                           annotation_text="Membrana", annotation_position="top left")
             fig.add_vrect(x0=0.7, x1=1.0, fillcolor="#cfe8ff", opacity=0.35, line_width=0,
                           annotation_text="Filme 2", annotation_position="top left")
-            fig.add_trace(go.Scatter(x=xs_p, y=ys_p, mode="lines+markers",
-                                     line=dict(color="crimson", width=3), name="Perfil"))
+            # três trechos (filme 1, membrana, filme 2); saltos nas interfaces em pontilhado
+            for i0, i1 in ((0, 1), (2, 3), (4, 5)):
+                fig.add_trace(go.Scatter(x=xs_p[i0:i1 + 1], y=ys_p[i0:i1 + 1], mode="lines+markers",
+                                         line=dict(color="crimson", width=3)))
+            for i0 in (1, 3):
+                if abs(ys_p[i0] - ys_p[i0 + 1]) > 1e-9 * max(1.0, abs(ys_p[i0])):
+                    fig.add_trace(go.Scatter(x=xs_p[i0:i0 + 2], y=ys_p[i0:i0 + 2], mode="lines",
+                                             line=dict(color="gray", dash="dot", width=2)))
             fig.update_layout(title="Perfil de concentração (esquemático)", height=400,
                               xaxis_title="Posição (larguras fora de escala)", yaxis_title=eixo_y,
                               xaxis=dict(range=[0, 1], showticklabels=False), showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
             if sistema.startswith("Diálise"):
-                st.caption("Os saltos nas interfaces com a membrana vêm do coeficiente de distribuição "
-                           "K' (C_s = K'·C_líquido). Com K' = 1, o perfil é contínuo.")
+                if equivalente:
+                    st.caption("Dentro da membrana, o gráfico mostra a concentração equivalente no líquido "
+                               "(C_s/K'), por isso o perfil é contínuo. A concentração real no sólido é "
+                               "K' vezes esse valor.")
+                else:
+                    st.caption("Os saltos (linhas pontilhadas) mostram que, na interface, a concentração no "
+                               "sólido é K' vezes a do líquido (C_s = K'·C). Com K' = 1, não há salto.")
             else:
                 st.caption("Dentro da membrana, o gráfico mostra a pressão parcial em equilíbrio com a "
                            "concentração no sólido (C_s = H·p_A), por isso o perfil é contínuo nas interfaces.")
